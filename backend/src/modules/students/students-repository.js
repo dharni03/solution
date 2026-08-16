@@ -98,6 +98,15 @@ const findStudentToSetStatus = async ({ userId, reviewerId, status }) => {
     return rowCount
 }
 
+const deleteStudent = async (id) => {
+    await processDBRequest({ query: "DELETE FROM user_profiles WHERE user_id = $1", queryParams: [id] });
+
+    const query = "DELETE FROM users WHERE id = $1";
+    const queryParams = [id];
+    const { rowCount } = await processDBRequest({ query, queryParams });
+    return rowCount;
+}
+
 const findStudentToUpdate = async (paylaod) => {
     const { basicDetails: { name, email }, id } = paylaod;
     const currentDate = new Date();
@@ -117,5 +126,6 @@ module.exports = {
     addOrUpdateStudent,
     findStudentDetail,
     findStudentToSetStatus,
-    findStudentToUpdate
+    findStudentToUpdate,
+    deleteStudent
 };
