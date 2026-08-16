@@ -140,6 +140,81 @@ All paths below are relative to the repository root unless noted otherwise.
   - Launch the full stack with `docker-compose up`
 - **How to test**: Run `docker-compose up --build` from the repository root and log in at `http://localhost:5173`
 
+## ✅ Submission Notes — Problem 2: Backend Developer Challenge
+
+This submission addresses **Problem 2 only** (Backend Developer Challenge — Student Management CRUD), as described in the Skill Test Problems section above. Problems 1 (Frontend), 3 (Blockchain), 4 (Golang), and 5 (DevOps) are out of scope for this submission.
+
+### Files changed
+- `backend/src/modules/students/students-controller.js` — request handlers for all six endpoints
+- `backend/src/modules/students/students-service.js` — business logic: existence checks, status/CRUD orchestration, verification email dispatch
+- `backend/src/modules/students/students-repository.js` — SQL/data-access layer, including a new `deleteStudent` query
+- `backend/src/modules/students/sudents-router.js` — added the `DELETE /:id` route
+
+No changes were made to the database schema (`seed_db/tables.sql`) — the existing `student_add_update` stored procedure and `users`/`user_profiles` tables were used as-is.
+
+### What was implemented
+
+| Method | Endpoint | Description | Auth required |
+|---|---|---|---|
+| GET | `/api/v1/students` | List students. Accepts optional query params `name`, `className`, `section`, `roll` to filter results | Yes |
+| GET | `/api/v1/students/:id` | Full profile detail for one student (contact info, class/section, parent/guardian info, admission date, reporting teacher) | Yes |
+| POST | `/api/v1/students` | Create a new student. Triggers an account-verification email on success | Yes |
+| PUT | `/api/v1/students/:id` | Update an existing student's full profile | Yes |
+| POST | `/api/v1/students/:id/status` | Enable/disable a student's system access (`{ "status": true \| false }`) | Yes |
+| DELETE | `/api/v1/students/:id` | Delete a student (removes both `user_profiles` and `users` rows) | Yes |
+
+All routes sit behind the existing `authenticateToken` and `csrfProtection` middleware already wired up in `backend/src/routes/v1.js` — no changes were needed there.
+
+**Example create/update payload** (matches the fields consumed by the `student_add_update` stored procedure):
+```json
+{
+  "name": "Jane Doe",
+  "gender": "female",
+  "dob": "2011-03-14",
+  "phone": "9998887777",
+  "email": "jane.doe@example.com",
+  "class": "5",
+  "section": "A",
+  "roll": "21",
+  "admissionDate": "2021-06-01",
+  "currentAddress": "12 Elm Street",
+  "permanentAddress": "12 Elm Street",
+  "fatherName": "John Doe",
+  "fatherPhone": "9991112222",
+  "motherName": "Mary Doe",
+  "motherPhone": "9993334444",
+  "guardianName": "John Doe",
+  "guardianPhone": "9991112222",
+  "relationOfGuardian": "Father",
+  "systemAccess": true
+}
+```
+
+Note: `class` and `section` must reference existing rows in the `classes` and `sections` tables (enforced by a foreign key on `user_profiles`) — create the relevant class/section first via the Classes module if the seed data doesn't already include one.
+
+### Bug fix: error messages on failed create
+
+`addNewStudent` previously wrapped the create step in a try/catch that discarded the actual failure reason and always threw a generic `500 "Unable to add student"` — even for a client-correctable error like a duplicate email. This has been fixed so the real reason now propagates with an appropriate status code:
+
+- Before: `POST /students` with a duplicate email → `500 { "error": "Unable to add student" }`
+- After: `POST /students` with a duplicate email → `400 { "error": "Email already exists" }`
+
+### Testing
+
+All six endpoints were exercised manually in **Postman** against a locally running instance (`npm run dev:server` from `backend/`, PostgreSQL seeded from `seed_db/tables.sql` + `seed_db/seed-db.sql`). Test flow:
+
+1. **Auth setup** — `POST /api/v1/auth/login` with the demo admin credentials to obtain the `accessToken`/`refreshToken` cookies and the `csrfToken` cookie; the CSRF token value is then sent as the `x-csrf-token` header on every subsequent request (required by the `csrfProtection` middleware already in place for the `/students` route group).
+2. **Happy path** — created a student (`POST`), confirmed it appeared in the list (`GET /students`) and in detail view (`GET /students/:id`), updated its profile (`PUT /students/:id`) and re-fetched to confirm the change persisted, toggled its `systemAccess` status (`POST /students/:id/status`), deleted it (`DELETE /students/:id`), then confirmed a follow-up `GET /students/:id` correctly returned `404 { "error": "Student not found" }`.
+3. **Filtering** — verified `GET /students?name=...`, `?className=...`, `?section=...`, and `?roll=...` each narrow the result set correctly.
+4. **Error paths**:
+   - No auth cookies → `401 Unauthorized`
+   - Missing/invalid `x-csrf-token` header → `400/403`
+   - `GET`/`PUT`/`DELETE` on a non-existent student ID → `404 { "error": "Student not found" }`
+   - `POST /students` with an email that already exists → `400 { "error": "Email already exists" }` (see bug fix above)
+   - `POST /students` with a `class`/`section` combination not present in the `classes`/`sections` tables → surfaced as a failed create rather than a silent success, due to the underlying foreign key constraint
+
+Postman was used for the request-by-request verification described above.
+
 ## 🛠️ Technology Stack
 
 ### Frontend
