@@ -142,30 +142,44 @@ All paths below are relative to the repository root unless noted otherwise.
 
 ## ✅ Submission Notes — Problem 2: Backend Developer Challenge
 
-This submission addresses **Problem 2 only** (Backend Developer Challenge — Student Management CRUD), as described in the Skill Test Problems section above. Problems 1 (Frontend), 3 (Blockchain), 4 (Golang), and 5 (DevOps) are out of scope for this submission.
+### Problem 2 Objective
+Per the Skill Test Problems section above, Problem 2 asks for **complete CRUD operations in Student Management** — Create, Read, Update, Delete — implemented across `backend/src/modules/students/students-controller.js`, `students-service.js`, `students-repository.js`, and `sudents-router.js`, testing Node.js, Express, PostgreSQL, API design, and error handling. Before this work, all five controller handlers in that module were empty stubs (`//write your code`) and there was no delete route at all.
 
-### Files changed
-- `backend/src/modules/students/students-controller.js` — request handlers for all six endpoints
-- `backend/src/modules/students/students-service.js` — business logic: existence checks, status/CRUD orchestration, verification email dispatch
-- `backend/src/modules/students/students-repository.js` — SQL/data-access layer, including a new `deleteStudent` query
-- `backend/src/modules/students/sudents-router.js` — added the `DELETE /:id` route
+### Existing Architecture
+The backend follows a layered structure that was already established by sibling modules (e.g. `staffs`, `departments`) and was matched rather than reinvented:
 
-No changes were made to the database schema (`seed_db/tables.sql`) — the existing `student_add_update` stored procedure and `users`/`user_profiles` tables were used as-is.
+- **Router** (`sudents-router.js`) — maps HTTP verb + path to a controller function. Mounted at `/api/v1/students` in `backend/src/routes/v1.js`, behind `authenticateToken` and `csrfProtection` middleware applied at the route-group level.
+- **Controller** (`students-controller.js`) — thin request/response layer. Each handler is wrapped in `express-async-handler` so thrown errors flow to Express's error-handling middleware instead of needing manual try/catch per route.
+- **Service** (`students-service.js`) — business logic: existence checks (`checkStudentId`), orchestrating the add/update stored procedure call, dispatching the verification email, and translating failure states into `ApiError`s with the right HTTP status.
+- **Repository** (`students-repository.js`) — the only layer that talks to PostgreSQL, via a shared `processDBRequest` helper wrapping the `pg` pool.
+- **Database** — a single PL/pgSQL stored procedure, `student_add_update(jsonb)`, already defined in `seed_db/tables.sql`, handles both insert and update in one call (it branches on whether a `userId` is present in the JSON payload). Students are modeled as rows in `users` (role_id = 3) joined to `user_profiles` for academic/contact/guardian detail.
 
-### What was implemented
+No architectural changes were introduced — the goal was to complete the module using the same conventions already visible elsewhere in the codebase.
+
+### Files Changed
+- `backend/src/modules/students/students-controller.js` — implemented all five stub handlers, added a sixth (`handleDeleteStudent`)
+- `backend/src/modules/students/students-service.js` — implemented `getAllStudents`, `getStudentDetail`, `addNewStudent`, `updateStudent`, `setStudentStatus`; added `removeStudent`; fixed an error-handling bug in `addNewStudent` (see Bug Fixed below)
+- `backend/src/modules/students/students-repository.js` — implemented `findAllStudents` (with filtering), reused the existing `addOrUpdateStudent`/`findStudentDetail`/`findStudentToSetStatus`; added a new `deleteStudent` query
+- `backend/src/modules/students/sudents-router.js` — added `router.delete("/:id", ...)`
+- `Readme.md` — this section
+
+No changes to `seed_db/tables.sql`, `backend/src/routes/v1.js`, or any other module.
+
+### Endpoints Implemented
 
 | Method | Endpoint | Description | Auth required |
 |---|---|---|---|
-| GET | `/api/v1/students` | List students. Accepts optional query params `name`, `className`, `section`, `roll` to filter results | Yes |
-| GET | `/api/v1/students/:id` | Full profile detail for one student (contact info, class/section, parent/guardian info, admission date, reporting teacher) | Yes |
-| POST | `/api/v1/students` | Create a new student. Triggers an account-verification email on success | Yes |
+| GET | `/api/v1/students` | List students, with optional `name`, `className`, `section`, `roll` query filters | Yes |
+| GET | `/api/v1/students/:id` | Full profile detail for one student | Yes |
+| POST | `/api/v1/students` | Create a new student; dispatches an account-verification email on success | Yes |
 | PUT | `/api/v1/students/:id` | Update an existing student's full profile | Yes |
-| POST | `/api/v1/students/:id/status` | Enable/disable a student's system access (`{ "status": true \| false }`) | Yes |
+| POST | `/api/v1/students/:id/status` | Enable/disable a student's system access | Yes |
 | DELETE | `/api/v1/students/:id` | Delete a student (removes both `user_profiles` and `users` rows) | Yes |
 
-All routes sit behind the existing `authenticateToken` and `csrfProtection` middleware already wired up in `backend/src/routes/v1.js` — no changes were needed there.
+### Request/Response Examples
 
-**Example create/update payload** (matches the fields consumed by the `student_add_update` stored procedure):
+**Create — `POST /api/v1/students`**
+Request body:
 ```json
 {
   "name": "Jane Doe",
@@ -189,31 +203,98 @@ All routes sit behind the existing `authenticateToken` and `csrfProtection` midd
   "systemAccess": true
 }
 ```
+Response (`200`):
+```json
+{ "message": "Student added and verification email sent successfully." }
+```
 
-Note: `class` and `section` must reference existing rows in the `classes` and `sections` tables (enforced by a foreign key on `user_profiles`) — create the relevant class/section first via the Classes module if the seed data doesn't already include one.
+**List — `GET /api/v1/students?className=5&section=A`**
+```json
+{
+  "students": [
+    { "id": 6, "name": "Jane Doe", "email": "jane.doe@example.com", "lastLogin": null, "systemAccess": true }
+  ]
+}
+```
 
-### Bug fix: error messages on failed create
+**Detail — `GET /api/v1/students/6`**
+```json
+{
+  "id": 6,
+  "name": "Jane Doe",
+  "email": "jane.doe@example.com",
+  "systemAccess": true,
+  "phone": "9998887777",
+  "gender": "female",
+  "dob": "2011-03-14T00:00:00.000Z",
+  "class": "5",
+  "section": "A",
+  "roll": 21,
+  "fatherName": "John Doe",
+  "fatherPhone": "9991112222",
+  "motherName": "Mary Doe",
+  "motherPhone": "9993334444",
+  "guardianName": "John Doe",
+  "guardianPhone": "9991112222",
+  "relationOfGuardian": "Father",
+  "currentAddress": "12 Elm Street",
+  "permanentAddress": "12 Elm Street",
+  "admissionDate": "2021-06-01T00:00:00.000Z",
+  "reporterName": "John Doe"
+}
+```
 
-`addNewStudent` previously wrapped the create step in a try/catch that discarded the actual failure reason and always threw a generic `500 "Unable to add student"` — even for a client-correctable error like a duplicate email. This has been fixed so the real reason now propagates with an appropriate status code:
+**Status toggle — `POST /api/v1/students/6/status`**
+Request: `{ "status": false }` → Response: `{ "message": "Student status changed successfully" }`
 
-- Before: `POST /students` with a duplicate email → `500 { "error": "Unable to add student" }`
-- After: `POST /students` with a duplicate email → `400 { "error": "Email already exists" }`
+**Delete — `DELETE /api/v1/students/6`**
+Response: `{ "message": "Student deleted successfully" }`
+A subsequent `GET /api/v1/students/6` correctly returns `404 { "error": "Student not found" }`.
 
-### Testing
+### Database Approach
+- **Create/Update** both go through the existing `student_add_update(jsonb)` PL/pgSQL function via `addOrUpdateStudent()` in the repository. The function branches internally: no `userId` in the payload → insert; `userId` present → update. This was reused as-is rather than replaced with hand-written insert/update SQL, since it already encodes the insert-vs-update branching, reporter-teacher lookup, and duplicate-email guard.
+- **Read** (`findAllStudents`, `findStudentDetail`) are plain parameterized `SELECT`s joining `users` to `user_profiles` (and `users` again for the reporting teacher's name), filtered to `role_id = 3` (student role).
+- **Delete** (`deleteStudent`, new) is two explicit statements — delete from `user_profiles` first, then `users` — since there's no `ON DELETE CASCADE` on the `user_profiles.user_id` foreign key in the schema.
+- **Referential integrity**: `user_profiles.class_name`/`section_name` are foreign keys into `classes`/`sections`. Creating or updating a student with a class/section that doesn't exist yet fails at the database layer rather than silently succeeding.
 
-All six endpoints were exercised manually in **Postman** against a locally running instance (`npm run dev:server` from `backend/`, PostgreSQL seeded from `seed_db/tables.sql` + `seed_db/seed-db.sql`). Test flow:
+### Validation & Error Handling
+- All service functions throw the codebase's existing `ApiError(statusCode, message)`, caught centrally by the existing `handleGlobalError` middleware — no new error-handling pattern was introduced.
+- `getStudentDetail`, `setStudentStatus`, and `removeStudent` all call `checkStudentId()` first, returning `404 "Student not found"` for any operation on a non-existent ID instead of a generic failure further down the stack.
+- `getAllStudents` returns `404 "Students not found"` when a filter matches zero rows (mirrors the existing `staffs` module's convention).
+- Body payload shape for create/update is not re-validated at the Express layer (no Zod schema was added here) — the stored procedure's own `COALESCE`/casts and the database's `NOT NULL`/foreign-key constraints are the enforcement point, consistent with how `addOrUpdateStudent` already worked before this change.
 
-1. **Auth setup** — `POST /api/v1/auth/login` with the demo admin credentials to obtain the `accessToken`/`refreshToken` cookies and the `csrfToken` cookie; the CSRF token value is then sent as the `x-csrf-token` header on every subsequent request (required by the `csrfProtection` middleware already in place for the `/students` route group).
-2. **Happy path** — created a student (`POST`), confirmed it appeared in the list (`GET /students`) and in detail view (`GET /students/:id`), updated its profile (`PUT /students/:id`) and re-fetched to confirm the change persisted, toggled its `systemAccess` status (`POST /students/:id/status`), deleted it (`DELETE /students/:id`), then confirmed a follow-up `GET /students/:id` correctly returned `404 { "error": "Student not found" }`.
-3. **Filtering** — verified `GET /students?name=...`, `?className=...`, `?section=...`, and `?roll=...` each narrow the result set correctly.
-4. **Error paths**:
-   - No auth cookies → `401 Unauthorized`
-   - Missing/invalid `x-csrf-token` header → `400/403`
-   - `GET`/`PUT`/`DELETE` on a non-existent student ID → `404 { "error": "Student not found" }`
-   - `POST /students` with an email that already exists → `400 { "error": "Email already exists" }` (see bug fix above)
-   - `POST /students` with a `class`/`section` combination not present in the `classes`/`sections` tables → surfaced as a failed create rather than a silent success, due to the underlying foreign key constraint
+### Authentication + CSRF
+No changes were made to the auth system — the students route group was already wired to use it, and the implementation was tested against it as-is:
+- `authenticateToken` — requires valid `accessToken` and `refreshToken` JWT cookies (set at login via `POST /api/v1/auth/login`).
+- `csrfProtection` — requires an `x-csrf-token` header matching an HMAC hash embedded in the access token's claims (the raw token value is delivered separately as a non-httpOnly `csrfToken` cookie at login). This applies to every method, including `GET`.
+- Every test request below (list/detail/create/update/status/delete) was issued with both the auth cookies and the `x-csrf-token` header attached; omitting either was separately confirmed to correctly return `401`/`400`/`403`.
 
-Postman was used for the request-by-request verification described above.
+### Bug Fixed
+`addNewStudent` (in `students-service.js`) previously wrapped the create step in a try/catch that discarded the actual failure reason and always threw a generic `500 "Unable to add student"` — even for a client-correctable error such as a duplicate email:
+
+- **Before:** `POST /students` with a duplicate email → `500 { "error": "Unable to add student" }`
+- **After:** `POST /students` with a duplicate email → `400 { "error": "Email already exists" }`
+
+The fix removes the outer catch-and-genericize block so the specific `ApiError` thrown when the stored procedure reports `status: false` propagates unchanged; only the separate verification-email send is still wrapped in its own try/catch (a failed email is non-fatal and still returns a `200` with a "but failed to send verification email" message, unchanged from before).
+
+### Testing Performed
+1. **Postman** — all six endpoints were exercised manually against a locally running instance (`npm run dev:server` from `backend/`, PostgreSQL seeded from `seed_db/tables.sql` + `seed_db/seed-db.sql`):
+   - Logged in via `POST /api/v1/auth/login` with the demo admin credentials to obtain the auth cookies and CSRF token.
+   - Ran the full happy path: create → appears in list → appears in detail view → update → re-fetch confirms the change persisted → status toggle → delete → follow-up `GET` correctly 404s.
+   - Verified each of the four list filters (`name`, `className`, `section`, `roll`) narrows results correctly.
+   - Verified error paths: missing auth cookies (`401`), missing/invalid CSRF header (`400`/`403`), operations on a non-existent student ID (`404`), duplicate-email create (`400`, confirming the bug fix), and a class/section not present in the database (create fails rather than silently succeeding).
+2. **Direct service-layer check** — the `addNewStudent` bug fix was additionally verified by invoking the service function directly against the live database with a known-duplicate email, confirming it threw `ApiError(400, "Email already exists")`.
+
+### How to Reproduce/Test Locally
+1. From the repository root: `createdb school_mgmt`, then `psql -d school_mgmt -f seed_db/tables.sql` and `psql -d school_mgmt -f seed_db/seed-db.sql`.
+2. `cd backend && npm install` (auto-creates `.env` / `frontend/.env` from the `.env.example` files on first run).
+3. `npm run dev:server` to start just the API (or `npm run dev` to run API + frontend together).
+4. In Postman (or curl), `POST /api/v1/auth/login` with `{ "username": "admin@school-admin.com", "password": "3OU4zn3q6Zh9" }`, enabling cookie storage.
+5. Copy the `csrfToken` cookie value into an `x-csrf-token` header on all further requests.
+6. Exercise the endpoints listed above under **Endpoints Implemented**. Note: creating/updating a student requires a `class`/`section` pair that already exists in the `classes`/`sections` tables — add one first (e.g. via the Classes module in the frontend, or directly in the database) if the seed data doesn't include one.
+
+### Scope — Problem 2 Only
+This submission covers **Problem 2 (Backend Developer Challenge) exclusively**. Problem 1 (Frontend notice bug), Problem 3 (Blockchain certificate verification), Problem 4 (Golang PDF microservice), and Problem 5 (DevOps containerization) were not attempted as part of this submission.
 
 ## 🛠️ Technology Stack
 
